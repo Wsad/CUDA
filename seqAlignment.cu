@@ -4,12 +4,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 void CopyToMatrix(int *dst, int *src, int cols, int rows);
 
 void PrintMatrix(int *arr, int xDim, int yDim);
+
+//Kernel initializes all elements of matrix to 'value'
+__global__ void init_matrix(int *matrix, int value, int maxElements){
+	if (blockDim.x * blockIdx.x + threadIDx.x < maxElements)
+		matrix[ blockDim.x * blockIdx.x + threadIDx.x] = value;
+}
  
 // Kernel that executes on the CUDA device
 __global__ void calc_matrix(int xPos, int yPos, int *matrix, int *result, int colSize, char* s1, char* s2){
@@ -43,11 +50,11 @@ __global__ void calc_matrix(int xPos, int yPos, int *matrix, int *result, int co
 	
 }
 
-//Using Shared Memory
+//Kernel Using Shared Memory
 __global__ void calc_shm( int tileSize, int row, int rank, int *matrix, int *result, char* s1, char* s2){
 	extern __shared__ int tile[];
 	int id = threadIdx.x;
-	int pos = rank + id;
+	int pos = rank + blockIdx.x * blockDim.x + id;
 	
 	//Load neighbors into shared memory
 	tile[id] = matrix[pos-2*row];//upleft from matrix
@@ -121,34 +128,33 @@ int main(int argc, char *argv[]){
 	cudaMemcpy(d_string1, string1, sizeof(char)*lenS1, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_string2, string2, sizeof(char)*lenS2, cudaMemcpyHostToDevice);
 	
-	//Initialize cost matrix
-	/**Can be done on device */
 	int entries = (lenS1+1)*(lenS2+1);
-	int *matrix =(int*)malloc(sizeof(int)*entries);
-	for (i = 0; i <= lenS1; i++){
-		for(int j=0; j <= lenS2; j++){
-			matrix[i*(lenS2+1)+j] = 0;
-		}
-	}
 	
-	//Initialize trace matrix
-	/**Can be done on device */
-	int *trace =(int*)malloc(sizeof(int)*entries);
-	for (i = 0; i <= lenS1; i++){
-		for(int j=0; j <= lenS2; j++){
-			trace[i*(lenS2+1)+j] = -2;
-		}
-	}
-	
-	//Allocate and Copy cost matrix to device
+	//Initialize cost matrix on Device
 	int* d_matrix;
 	cudaMalloc((void**)&d_matrix, sizeof(int)*entries);
-	cudaMemcpy(d_matrix, matrix, sizeof(int)*entries, cudaMemcpyHostToDevice);
 	
-	//Allocate and Copy trace matrix to device
+	init_matrix<<< ceilf(((float)entries)/256), 256 >>>(d_matrix, 0, entries);
+	
+	//Allocate and copy cost matrix to Host
+	int *matrix =(int*)malloc(sizeof(int)*entries);
+	cudaMemcpy(matrix, d_matrix, sizeof(int)*entries, cudaMemcpyDeviceToHost);
+	
+	//Initialize trace matrix on Device
 	int* d_trace;
 	cudaMalloc((void**)&d_trace, sizeof(int)*entries);
-	cudaMemcpy(d_trace, trace, sizeof(int)*entries, cudaMemcpyHostToDevice);
+	init_matrix<<< ceilf(((float)entries)/256), 256 >>>(trace, -2, entries);
+	
+	//Allocate and copy trace matrix to Host
+	int *trace =(int*)malloc(sizeof(int)*entries);
+	cudaMemcpy(trace, d_trace, sizeof(int)*entries, cudaMemcpyDeviceToHost);
+	
+	
+	
+	
+	
+	
+
 	
 	//Allocate final matrix: Used for output (easier printing)
 	int *matrix2d = (int*)malloc(sizeof(int)*entries);
@@ -165,6 +171,7 @@ int main(int argc, char *argv[]){
 		CopyToMatrix(matrix2d,matrix,lenS1+1,lenS2+1);
 		PrintMatrix(matrix2d, lenS1+1, lenS2+1);*/
 	}
+
 	
 	/* original kernel
 	for(i=1; i < maxThreads; i++){
