@@ -14,10 +14,15 @@ void PrintMatrix(int *arr, int xDim, int yDim);
 
 //Kernel initializes all elements of matrix to 'value'
 __global__ void init_matrix(int *matrix, int value, int maxElements){
-	if (blockDim.x * blockIdx.x + threadIDx.x < maxElements)
-		matrix[ blockDim.x * blockIdx.x + threadIDx.x] = value;
+	if (blockDim.x * blockIdx.x + threadIdx.x < maxElements)
+		matrix[ blockDim.x * blockIdx.x + threadIdx.x] = value;
 }
- 
+
+
+__global__ void computeDiagonal(int index, int size, int *d_matrix, int *d_trace, char *d_string1, char *d_string2 /*,int offset*/){
+
+}
+
 // Kernel that executes on the CUDA device
 __global__ void calc_matrix(int xPos, int yPos, int *matrix, int *result, int colSize, char* s1, char* s2){
 	int x = xPos + threadIdx.x;
@@ -143,33 +148,34 @@ int main(int argc, char *argv[]){
 	//Initialize trace matrix on Device
 	int* d_trace;
 	cudaMalloc((void**)&d_trace, sizeof(int)*entries);
-	init_matrix<<< ceilf(((float)entries)/256), 256 >>>(trace, -2, entries);
+	init_matrix<<< ceilf(((float)entries)/256), 256 >>>(d_trace, -2, entries);
 	
 	//Allocate and copy trace matrix to Host
 	int *trace =(int*)malloc(sizeof(int)*entries);
 	cudaMemcpy(trace, d_trace, sizeof(int)*entries, cudaMemcpyDeviceToHost);
-	
-	
-	
-	
-	
-	
 
-	
 	//Allocate final matrix: Used for output (easier printing)
 	int *matrix2d = (int*)malloc(sizeof(int)*entries);
 	
 	// Do calculation on device: Assume square matrix for now
-	int maxThreads = min(lenS1,lenS2);
-	int size=3; int index = 4;
-	for (i=1; i < lenS2; i++){
-		calc_shm<<< 1, i, size*sizeof(int) >>>(size, i+1, index, d_matrix, d_trace, d_string1, d_string2);
-		size += 2;
-		index += i + 2;
+	int size=3; int index = 4; int row = 2;
+	for (row; row < lenS2; row++){
+		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset*/);
+		//calc_shm<<< 1, i, size*sizeof(int) >>>(size, i+1, index, d_matrix, d_trace, d_string1, d_string2);
+		index += size;
+		size++;
 		cudaDeviceSynchronize();
-		/*cudaMemcpy(matrix, d_matrix, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
-		CopyToMatrix(matrix2d,matrix,lenS1+1,lenS2+1);
-		PrintMatrix(matrix2d, lenS1+1, lenS2+1);*/
+	}
+	size--;
+	for(int k = 0; k < lenS1 - lenS2; k++){
+		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset*/);
+		index += size;
+		row++;
+	}
+	for(row; row < lenS1+lenS2+1; row++){
+		size--;
+		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset*/);
+		index += size;
 	}
 
 	
