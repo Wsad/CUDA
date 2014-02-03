@@ -116,17 +116,14 @@ __global__ void calc_shm( int tileSize, int row, int rank, int *matrix, int *res
 // Main routine: Executes on the host
 int main(int argc, char *argv[]){
 	char AGCT[] = "AGCT";
-		
-	/*printf("Enter size: ");	
-	scanf("%d",&lenS1);*/
+	
 	if (argc > 1)
 		lenS1 = atoi(argv[1]);
+		lenS2 = lenS1;
 	else {
 		printf("No Command Line Arguments Set --- Exiting Program");
 		exit(0);
 	}
-	
-	lenS2 = lenS1;
 	
 	string1 = (char*)malloc(sizeof(char)*lenS1);
 	string2 = (char*)malloc(sizeof(char)*lenS2);
@@ -173,22 +170,13 @@ int main(int argc, char *argv[]){
 	
 	// Do calculation on device:
 	CalculateCostMatrix(d_matrix, d_trace);
-		
-	/* original kernel
-	for(i=1; i < maxThreads; i++){
-		calc_matrix <<< 1, i >>> (1, i, d_matrix, d_trace, (lenS2+1), d_string1, d_string2);
-		cudaDeviceSynchronize();
-	}
-	for(i = maxThreads; i > 0; i--){
-		//printf("%d\n",i);
-		calc_matrix <<< 1, i >>>(maxThreads-i+1, lenS2, d_matrix, d_trace, (lenS2+1), d_string1, d_string2);
-		cudaDeviceSynchronize();
-	}*/
 	
 	// Retrieve result from device and store it in host array
 	cudaMemcpy(matrix, d_matrix, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
 	cudaMemcpy(trace, d_trace, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
 	
+	CopyToMatrix(matrix2d, matrix, lenS1+1, lenS2+1);
+	PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
 	
 	/* Print results from Original Kernel
 	printf("%d\t", matrix[0]);
@@ -284,6 +272,7 @@ int main(int argc, char *argv[]){
 	free(finalS1);
 	free(finalS2);
 }
+
 void CalculateCostMatrix( int *d_matrix, int *d_trace ){
 	//Top section of cost table
 	int size=3; int index = 4;
@@ -294,25 +283,31 @@ void CalculateCostMatrix( int *d_matrix, int *d_trace ){
 		//calc_shm<<< 1, i, size*sizeof(int) >>>(size, i+1, index, d_matrix, d_trace, d_string1, d_string2);
 		index += size;
 		size++;
-		cudaDeviceSynchronize();
+		//cudaDeviceSynchronize();
 	}
 	size--;
 	
 	//Middle section of cost table
 	int k = lenS1 - lenS2 + 1;
 	if (k > 1){
-		numThreads = size - 2;
+		numThreads = size - 1;
 	  	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 1*/);
-	  	for (int i = k ; i > 3; i--){
+		index += size;
+	  	for (int i = k ; i > 2; i--){
 	    	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 2*/);
+			index += size;
 	    	row++;
 	    }
-	  	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 3*/);
+	  	size--;
+		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 3*/);
+		index += size;
 	  	row += 2;
 	}else{
 	  	size--;
-	  	numThreads = size - 2;
+	  	numThreads = size;
 	  	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 4*/);
+		index += size; 
+		row++;
 	}
 
 	/*for(int k = 0; k < lenS1 - lenS2; k++){
