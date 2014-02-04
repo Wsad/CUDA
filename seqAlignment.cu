@@ -8,8 +8,11 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#define numThreads 32
+
 //Global Variables
 int lenS1, lenS2;
+
 char *string1, *string2, *d_string1, *d_string2;
 
 void CalculateCostMatrix(int *d_matrix, int *d_trace);
@@ -25,12 +28,39 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 }
 
 
-__global__ void computeDiagonal(int index, int size, int *d_matrix, int *d_trace, char *d_string1, char *d_string2 /*,int offset*/){
-	int pos = index + blockIdx.x * blockDim.x + threadIdx.x;
-	
-	int up = d_matrix[pos-size+1];
-	int left = d_matrix[pos-size];
-	int upLeft = d_matrix[pos-2*size +2];
+__global__ void ComputeDiagonal(int index, int size, int *d_matrix, int *d_trace, char *d_s1, char *d_s2 , int offset1, int offset2){
+	int threads = size + min(offset2*-1,0);
+	if (blockIdx.x * blockDim.x + threadIdx.x < threads){
+		int pos = index + blockIdx.x * blockDim.x + threadIdx.x;
+		
+		int up = d_matrix[pos - size + 1 + offset1];
+		int left = d_matrix[pos - size + offset1];
+		int upLeft = d_matrix[pos-2*size + offset2];
+		
+		if( d_s1[threadIdx.x] == d_s2[threads-threadIdx.x-1] )
+			upLeft += 2;
+		else
+			upLeft -= 1;
+		
+		int cost;
+		if (up > left)
+			cost = up - 1;
+		else
+			cost = left - 1;
+			
+		if (upLeft > cost)
+			cost = upLeft;
+			
+		d_matrix[pos] = max(cost,0);
+		
+		/** Debug
+		d_matrix[pos - size + 1 + offset1] = pos - size + 1 + offset1;
+		d_matrix[pos - size + offset1] = pos - size + offset1;
+		d_matrix[pos - 2*size + offset2] = pos - 2*size + offset2;*/
+		
+	}
+	else{
+	}
 }
 
 // Kernel that executes on the CUDA device
@@ -117,10 +147,10 @@ __global__ void calc_shm( int tileSize, int row, int rank, int *matrix, int *res
 int main(int argc, char *argv[]){
 	char AGCT[] = "AGCT";
 	
-	if (argc > 1)
+	if (argc > 1){
 		lenS1 = atoi(argv[1]);
 		lenS2 = lenS1;
-	else {
+	}else {
 		printf("No Command Line Arguments Set --- Exiting Program");
 		exit(0);
 	}
@@ -136,8 +166,18 @@ int main(int argc, char *argv[]){
 		string2[i] = AGCT[rand()%4];
 	}
 
-	printf("string1 %s\nstring2: %s\n", string1, string2);	
-
+	//printf("string1 %s\nstring2: %s\n", string1, string2);	
+	/*printf("\t");	
+	for(int i =0; i < lenS1; i++)
+		printf("%c\t",string1[i]);
+	printf("\n\t");
+	for(int i =0; i < lenS2; i++)
+		printf("%c\t",string2[i]);
+	printf("\n");
+	for(int i =0; i < 100; i++)
+		printf("-");
+	printf("\n");*/
+	
 	cudaMalloc((void**)&d_string1, sizeof(char)*lenS1);
 	cudaMalloc((void**)&d_string2, sizeof(char)*lenS2);
 	
@@ -170,51 +210,18 @@ int main(int argc, char *argv[]){
 	
 	// Do calculation on device:
 	CalculateCostMatrix(d_matrix, d_trace);
+	cudaDeviceSynchronize();
 	
 	// Retrieve result from device and store it in host array
 	cudaMemcpy(matrix, d_matrix, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
 	cudaMemcpy(trace, d_trace, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
 	
 	CopyToMatrix(matrix2d, matrix, lenS1+1, lenS2+1);
-	PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
+	//PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
 	
-	/* Print results from Original Kernel
-	printf("%d\t", matrix[0]);
-	i=0;j=2;
-	while(i < entries){
-		i += j;
-		printf("%d\t", matrix[i]);
-		j++
-	}
-		
-	}
-	j = 0;
-	for( i =0; i <= lenS2; i++){
-		for(j=i; j <=lenS2; j++){
-			printf("%d\t" matrix[((j+2)*(j+1))/2 - i -1]);
-			if ((j+1)%lenS2 == 0)
-				printf("\n");
-		}
-	}*/
-	/*
-	printf("Cost Matrix:\n");
-	for (i=0; i <=lenS2; i++) {
-		for (int j=0; j<=lenS1;j++){
-			printf("%d\t", matrix[j*(lenS2+1)+i]);
-		}
-		printf("\n");
-	}
-	printf("\nTrace Matrix:\n");
-	for (i=0; i <=lenS2; i++) {
-		for (int j=0; j<=lenS1;j++){
-			printf("%d\t", trace[j*(lenS2+1)+i]);
-		}
-		printf("\n");
-	}*/
-	
-
+	//This Section causes an error:  "object was probably modified after being freed"
 	/**Find largest value in matrix and then walk back until a '0' <- matrix[ix+j] value is found.
-	 Find local alignment*/
+	 Find local alignment
 	int max = 0;
 	int maxPos = 0;
 	for(i=0; i < (lenS1+1)*(lenS2+1);i++){
@@ -255,9 +262,11 @@ int main(int argc, char *argv[]){
 	for (i=length-1; i >= 0; i--){
 		printf("%c",finalS2[i]);
 	}
-	printf("\n");
+	free(finalS1);
+	free(finalS2);
+	*/
+
 	// Cleanup
-	
 	free(matrix2d);
 	cudaFree(d_matrix);
 
@@ -268,59 +277,50 @@ int main(int argc, char *argv[]){
 	free(string2); 
 	cudaFree(d_string1); 
 	cudaFree(d_string2);
-	
-	free(finalS1);
-	free(finalS2);
 }
 
 void CalculateCostMatrix( int *d_matrix, int *d_trace ){
 	//Top section of cost table
-	int size=3; int index = 4;
-	int numBlocks =1; int numThreads; int row;
-	for (row=2; row < lenS2; row++){
-		numThreads = size - 2;
-		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset*/);
-		//calc_shm<<< 1, i, size*sizeof(int) >>>(size, i+1, index, d_matrix, d_trace, d_string1, d_string2);
+	int size=3; int index = 3;
+	int numBlocks =1; /*int numThreads;*/ int row;
+	for (row=2; row <= lenS2; row++){
+		//numThreads = size - 2;
+		numBlocks = (size-2)/numThreads +1;
+		ComputeDiagonal<<< numBlocks, numThreads >>>(index+1, size, d_matrix, d_trace, d_string1, d_string2 , 0, 2);
 		index += size;
 		size++;
-		//cudaDeviceSynchronize();
 	}
 	size--;
 	
 	//Middle section of cost table
 	int k = lenS1 - lenS2 + 1;
 	if (k > 1){
-		numThreads = size - 1;
-	  	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 1*/);
+		//numThreads = size - 1;
+		numBlocks = (size-1)/numThreads +1;
+	  	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, 0, 1);
 		index += size;
 	  	for (int i = k ; i > 2; i--){
-	    	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 2*/);
+	    	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, 0, 1);
 			index += size;
 	    	row++;
 	    }
 	  	size--;
-		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 3*/);
+		ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -1);
 		index += size;
 	  	row += 2;
 	}else{
 	  	size--;
-	  	numThreads = size;
-	  	computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset case 4*/);
+	  	//numThreads = size;
+	  	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -1);
 		index += size; 
 		row++;
 	}
-
-	/*for(int k = 0; k < lenS1 - lenS2; k++){
-		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 ,offset);
-		index += size;
-		row++;
-	}*/
 	
 	//Bottom section of cost table
 	for(int r = row; r < lenS1+lenS2+1; r++){
 		size--;
-		numThreads = size - 2;
-		computeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2 /*,offset*/);
+		//numThreads = size;
+		ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -2);
 		index += size;
 	}
 }
@@ -328,7 +328,7 @@ void CalculateCostMatrix( int *d_matrix, int *d_trace ){
 void PrintMatrix(int *arr, int xDim, int yDim){
 	for(int i =0; i < yDim; i++){
 		for(int j = 0; j < xDim; j++)
-			printf("%d ",arr[i*xDim + j]);
+			printf("%d\t",arr[i*xDim + j]);
 		printf("\n");
 	}
 }
