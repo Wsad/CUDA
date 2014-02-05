@@ -30,7 +30,7 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 }
 
 
-__global__ ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
+__global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
 	int id = blockIdx.x * blockDim.x + threadIdx.x;
 	if (id < space){
 		int left = arr[prevI + id];
@@ -88,14 +88,14 @@ int main(int argc, char *argv[]){
 	for(i=0; i<lenS2 ;i++)
 		string2[i] = AGCT[rand()%4];
 
-	//printf("string1 %s\nstring2: %s\n", string1, string2);
+	/**printf("string1 %s\nstring2: %s\n", string1, string2);
 	printf("\t|\t");
 	for(int i =0; i < lenS1; i++)
 		printf("%c\t",string1[i]);
 	printf("\n");
 	for(int i =0; i < 75; i++)
 		printf("-");
-	printf("\n");
+	printf("\n");*/
 
 	cudaMalloc((void**)&d_string1, sizeof(char)*lenS1);
 	cudaMalloc((void**)&d_string2, sizeof(char)*lenS2);
@@ -136,7 +136,7 @@ int main(int argc, char *argv[]){
 	cudaMemcpy(trace, d_trace, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
 
 	CopyToMatrix(matrix2d, matrix, lenS1+1, lenS2+1);
-	PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
+	//PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
 
 	//This Section causes an error:  "object was probably modified after being freed"
 	/**Find largest value in matrix and then walk back until a '0' <- matrix[ix+j] value is found.
