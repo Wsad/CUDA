@@ -17,7 +17,7 @@ int lenS2 = 0;
 
 char *string1, *string2, *d_string1, *d_string2;
 
-void CalculateCostMatrix(int *d_matrix, int *d_trace);
+void CalculateCost(int *d_matrix, int *d_trace, int s1, int s2);
 
 void CopyToMatrix(int *dst, int *src, int cols, int rows);
 
@@ -30,14 +30,14 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 }
 
 
-__global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
+__global__ ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
 	int id = blockIdx.x * blockDim.x + threadIdx.x;
 	if (id < space){
 		int left = arr[prevI + id];
-		int up = arr[prevI + id 1];
+		int up = arr[prevI + id + 1];
 		int upLeft = arr[lastI + id];
 		
-		if(s1[s1off + id] == d_s2[s2off + id] )
+		if(s1[s1off + id] == s2[s2off - id] )
 			upLeft += 2;
 		else
 			upLeft -= 1;
@@ -55,87 +55,9 @@ __global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr
 			cost = upLeft;
 			dir = 0;
 		}
-		arr[index + id] = cost;
-		trace[index + id] = dir;	
+		arr[i + id] = max(cost, 0);
+		trace[i + id] = dir;	
 	}
-}
-
-/*
-__global__ void ComputeDiagonal(int index, int size, int *d_matrix, int *d_trace, char *d_s1, char *d_s2 , int offset1, int offset2){
-	int threads = size + min(offset2*-1,0);
-	if (blockIdx.x * blockDim.x + threadIdx.x < threads){
-		int pos = index + blockIdx.x * blockDim.x + threadIdx.x;
-
-		int up = d_matrix[pos - size + 1 + offset1];
-		int left = d_matrix[pos - size + offset1];
-		int upLeft = d_matrix[pos-2*size + offset2];
-
-		if( d_s1[threadIdx.x] == d_s2[threads-threadIdx.x-1] )
-			upLeft += 2;
-		else
-			upLeft -= 1;
-
-		int cost;
-		if (up > left)
-			cost = up - 1;
-		else
-			cost = left - 1;
-
-		if (upLeft > cost)
-			cost = upLeft;
-
-		d_matrix[pos] = max(cost,0);
-		// Debug
-		//d_matrix[pos - size + 1 + offset1] = pos - size + 1 + offset1;
-		//d_matrix[pos - size + offset1] = pos - size + offset1;
-		//d_matrix[pos - 2*size + offset2] = pos - 2*size + offset2;
-
-	}
-	else{
-	}
-}*/
-
-//Kernel Using Shared Memory
-__global__ void calc_shm( int tileSize, int row, int rank, int *matrix, int *result, char* s1, char* s2){
-	extern __shared__ int tile[];
-	int id = threadIdx.x;
-	int pos = rank + blockIdx.x * blockDim.x + id;
-
-	//Load neighbors into shared memory
-	tile[id] = matrix[pos-2*row];//upleft from matrix
-	tile[row+id-2] = matrix[pos-row-1]; //left from matrix
-	tile[row + id - 1] = matrix[pos-row];//up from matrix
-
-	syncthreads();
-	int up = tile[row + id - 1];
-	int left = tile[row + id -2];
-	int upLeft = tile[id];
-
-	//printf("ThreadID: %d\ts1: %c\ts2: %c\n",threadIdx.x,s1[id],s2[row-2-id]);
-	//printf("ThreadID: %d\tx: %d\ty: %d\t#:%d\n",threadIdx.x,x,y,(x*colSize+y));
-
-	int match, trace = -2;
-	if (s1[id] == s2[row-2-id])
-		match = 2;
-	else
-		match = -1;
-	int maxV = max( left -1, up - 1);
-	if (left -1 > up -1){
-		maxV = left-1;
-		trace = -1;
-	} else {
-		maxV = up -1;
-		trace = 1;
-	} if ( upLeft + match > maxV){
-		maxV = upLeft+match;
-		trace = 0;
-	}
-	//store cost in 'd_matrix'
-	matrix[pos] = max(maxV,0);
-	//printf("ThreadID: %d\tup: %d\tleft: %d\tupleft: %d\tMax: %d\trank: %d\trow: %d\n",threadIdx.x,up,left,upLeft,maxV, pos, row);
-
-	//store choice in 'd_trace' matrix. For use when retracing at end.
-	result[pos] = trace;
 }
 
 // Main routine: Executes on the host
@@ -167,14 +89,11 @@ int main(int argc, char *argv[]){
 		string2[i] = AGCT[rand()%4];
 
 	//printf("string1 %s\nstring2: %s\n", string1, string2);
-	printf("\t");
+	printf("\t|\t");
 	for(int i =0; i < lenS1; i++)
 		printf("%c\t",string1[i]);
-	printf("\n\t");
-	for(int i =0; i < lenS2; i++)
-		printf("%c\t",string2[i]);
 	printf("\n");
-	for(int i =0; i < 100; i++)
+	for(int i =0; i < 75; i++)
 		printf("-");
 	printf("\n");
 
@@ -209,7 +128,7 @@ int main(int argc, char *argv[]){
 	int *matrix2d = (int*)malloc(sizeof(int)*entries);
 
 	// Do calculation on device:
-	CalculateCostMatrix(d_matrix, d_trace);
+	CalculateCost(d_matrix, d_trace, lenS1+1, lenS2+1);
 	cudaDeviceSynchronize();
 
 	// Retrieve result from device and store it in host array
@@ -280,62 +199,39 @@ int main(int argc, char *argv[]){
 	cudaFree(d_string2);
 }
 
-void CalculateCostMatrix( int *d_matrix, int *d_trace ){
-	//Top section of cost table
-	int size=3; int index = 3;
-	int numBlocks =1; /*int numThreads;*/ int row;
-	for (row=2; row <= lenS2; row++){
-		//numThreads = size - 2;
-		numBlocks = (size-2)/numThreads +1;
-		ComputeDiagonal<<< numBlocks, numThreads >>>(index+1, size, d_matrix, d_trace, d_string1, d_string2 , 0, 2);
-		index += size;
-		size++;
-	}
-	size--;
+void CalculateCost(int *d_matrix, int *d_trace, int s1, int s2){
+	int i = 3;
+	int prev = 1;
+	int last = 0;
 
-	//Middle section of cost table
-	int k = lenS1 - lenS2 + 1;
-	//printf("%d %d %d\n", k, index, size);
-	if (k > 1){
-		//numThreads = size - 1;
-		numBlocks = (size-1)/numThreads +1;
-	  	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, 0, 1);
-		index += size;
-	  	for (int i = k ; i > 2; i--){
-			//printf("%d %d\n", k, index);
-	    	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, 0, 1);
-			index += size;
-	    	row++;
-	    }
-	  	size--;
-		//printf("%d %d\n", k, index);
-		ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -1);
-		index += size;
-	  	row += 2;
-	}else{
-	  	size--;
-	  	//numThreads = size;
-	  	ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -1);
-		index += size;
-		row++;
-	}
-
-	//Bottom section of cost table
-	for(int r = row; r < lenS1+lenS2+1; r++){
-		size--;
-		//numThreads = size;
-		numBlocks = (size)/numThreads +1;
-		ComputeDiagonal<<< numBlocks, numThreads >>>(index, size, d_matrix, d_trace, d_string1, d_string2, -1, -2);
-		index += size;
-	}
+    for (int slice = 2; slice < s2 + s1 - 1; slice++) {
+        int z1 = slice < s1 ? 0 : slice - s1 + 1;
+        int z2 = slice < s2 ? 0 : slice - s2 + 1;
+        
+		int size = slice - z1 - z2 +1;
+		int threads = size -2;
+		
+		if (z2>1) last++;
+		if (z1 > 0) threads++;
+		
+		int off =1;
+		if (z2 > 0) { threads++; off = 0; };
+        
+		ComputeDiagonal<<<(threads/numThreads + 1), numThreads>>>
+						(i + off, prev, last, threads, d_matrix, d_trace, d_string1, d_string2, max(z2-1, 0), min(slice-2, s2-2));
+		last = prev;
+		prev = i;
+		i += size;
+    }
 }
 
 void PrintMatrix(int *arr, int xDim, int yDim){
-	for(int i =0; i < yDim; i++){
+	printf("\t|");
+	for(int i =0; i < yDim; i++){	
 		for(int j = 0; j < xDim; j++)
 			printf("%d\t",arr[i*xDim + j]);
-		printf("\n");
-	}
+		printf("\n%c\t|", string2[i]);
+	}printf("\n");
 }
 
 void CopyToMatrix(int *dst, int *src, int cols, int rows){
@@ -348,25 +244,6 @@ void CopyToMatrix(int *dst, int *src, int cols, int rows){
             dst[cols*j + slice - j] = src[i++];
         }
     }
-	
-	/**Credit: Jan on Stackoverflow
-	// traverse array diagonally
-	int c, tmp, x, i;
-	i=0;
-	for (c = cols - 1; c > -cols; c--) {
-		tmp = cols - abs(c) - 1;
-		x = tmp;
-		while (x >= 0) {
-			if (c >= 0) {
-				dst[x*cols +(tmp - x)] = src[i++];
-			}
-			else {
-				dst[(cols - (tmp - x) - 1)*cols + ((cols-1)-x)] = src[i++];
-			}
-			--x;
-		}
-		//std::cout << "\n";
-	}*/
 }
 
 
