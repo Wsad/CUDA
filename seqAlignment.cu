@@ -11,17 +11,11 @@
 
 #define numThreads 128
 
-//Global Variables
-int lenS1 =0;
-int lenS2 = 0;
-
-char *string1, *string2, *d_string1, *d_string2;
-
-void CalculateCost(int *d_matrix, int *d_trace, int s1, int s2);
+void CalculateCost(int *d_matrix, int *d_trace, char *d_s1, char *d_s2, int s1, int s2);
 
 void CopyToMatrix(int *dst, int *src, int cols, int rows);
 
-void PrintMatrix(int *arr, int xDim, int yDim);
+void PrintMatrix(int *arr, char *s1, char *s2, int xDim, int yDim);
 
 //Kernel initializes all elements of matrix to 'value'
 __global__ void init_matrix(int *matrix, int value, int maxElements){
@@ -29,6 +23,31 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 		matrix[ blockDim.x * blockIdx.x + threadIdx.x] = value;
 }
 
+//Finds max value of array and places its index into '*out'
+//Credit to udacity - Lesson 3 - reduction
+__global__ void maxReduce(int *table, int *out){
+	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	extern __shared__ int s_table[];
+	
+	//copy from global to shared memory
+	s_table[id] = table[id];
+	s_table[id+1024] = id;
+	syncthreads();
+	
+	for(unsigned int i = blockDim.x/2; i > 0; i>>=2){
+		if (id < i){
+			if (s_table[id] > s_table[id + i]){
+				s_table[id] = s_table[id + i];
+				s_table[id+1024] = s_table[id+i+1024];
+			}
+		}
+		syncthreads();
+	}
+	
+	//place result int out
+	if (id == 0)
+		out[id] = s_table[id+1024];
+}
 
 __global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
 	int id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -63,7 +82,7 @@ __global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr
 // Main routine: Executes on the host
 int main(int argc, char *argv[]){
 	char AGCT[] = "AGCT";
-
+	int lenS1, lenS2;
 	if (argc > 2){
 		int args[] = { atoi(argv[1]), atoi(argv[2]) };
 		if (args[0] > args[1]){
@@ -78,65 +97,123 @@ int main(int argc, char *argv[]){
 		exit(0);
 	}
 
-	string1 = (char*)malloc(sizeof(char)*lenS1);
-	string2 = (char*)malloc(sizeof(char)*lenS2);
+	//Allocate strings on host
+	char * string1 = (char*)malloc(sizeof(char)*lenS1);
+	char * string2 = (char*)malloc(sizeof(char)*lenS2);
 
+	//Initialize strings with random numbers
 	srand(time(NULL));
-	int i;
-	for(i=0; i<lenS1 ;i++)
+	for(int i=0; i<lenS1 ;i++)
 		string1[i] = AGCT[rand()%4];
-	for(i=0; i<lenS2 ;i++)
+	for(int i=0; i<lenS2 ;i++)
 		string2[i] = AGCT[rand()%4];
+	
+	//Allocate strings on device
+	cudaError_t error = cudaSuccess;
+	char *d_string1, *d_string2;
+	
+	error = cudaMalloc((void**)&d_string1, sizeof(char)*lenS1);
+	
+	if (error != cudaSuccess) {
+		printf("Error allocating s1 on device\n");
+		exit(0);
+	}
+	
+	error = cudaMalloc((void**)&d_string2, sizeof(char)*lenS2);
+	
+	if (error != cudaSuccess) {
+		printf("Error allocating s2 on device\n");
+		exit(0);
+	}
+	
+	//Initialize sequence strings on device
+	error = cudaMemcpy(d_string1, string1, sizeof(char)*lenS1, cudaMemcpyHostToDevice);
+	
+	if (error != cudaSuccess) {
+		printf("Error copying s1 to device\n");
+		exit(0);
+	}
+	
+	error = cudaMemcpy(d_string2, string2, sizeof(char)*lenS2, cudaMemcpyHostToDevice);
+	
+	if (error != cudaSuccess) {
+		printf("Error copying s2 to device\n");
+		exit(0);
+	}
 
-	/**printf("string1 %s\nstring2: %s\n", string1, string2);
-	printf("\t|\t");
-	for(int i =0; i < lenS1; i++)
-		printf("%c\t",string1[i]);
-	printf("\n");
-	for(int i =0; i < 75; i++)
-		printf("-");
-	printf("\n");*/
-
-	cudaMalloc((void**)&d_string1, sizeof(char)*lenS1);
-	cudaMalloc((void**)&d_string2, sizeof(char)*lenS2);
-
-	cudaMemcpy(d_string1, string1, sizeof(char)*lenS1, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_string2, string2, sizeof(char)*lenS2, cudaMemcpyHostToDevice);
-
+	//Allocate score table on Device
 	int entries = (lenS1+1)*(lenS2+1);
-
-	//Initialize cost matrix on Device
 	int* d_matrix;
-	cudaMalloc((void**)&d_matrix, sizeof(int)*entries);
+	error = cudaMalloc((void**)&d_matrix, sizeof(int)*entries);
+	
+	if (error != cudaSuccess) {
+		printf("Error allocating d_matrix on device\n");
+		exit(0);
+	}
 
-	init_matrix<<< entries/256+1, 256 >>>(d_matrix, 0, entries);
+	int threadsPerBlock = 256;
+	int blocksPerGrid = (entries + threadsPerBlock -1)/threadsPerBlock;
+	
+	//Initialize score table with 0
+	init_matrix<<< blocksPerGrid, threadsPerBlock >>>(d_matrix, 0, entries);
+	
+	
+	//Allocate trace table on Device
+	int* d_trace;
+	error = cudaMalloc((void**)&d_trace, sizeof(int)*entries);
+	
+	if (error != cudaSuccess) {
+		printf("Error allocating d_matrix on device\n");
+		exit(0);
+	}
 
-	//Allocate and copy cost matrix to Host
+	//Initialize trace table with -2
+	init_matrix<<< blocksPerGrid, threadsPerBlock >>>(d_trace, -2, entries);
+
+	/* Do calculation on device:
+	 *
+	 */
+	CalculateCost(d_matrix, d_trace, d_string1, d_string2, lenS1+1, lenS2+1);
+	cudaDeviceSynchronize();
+	
+	error = cudaGetLastError();
+	
+	if (error != cudaSuccess) {
+		printf("Error with kernel or d_matrix/d_trace allocation: %s\n", cudaGetErrorString(error));
+		exit(0);
+	}
+	
+	int *posMax;
+	error = cudaMalloc((void**)&posMax, 1*sizeof(int));
+	maxReduce<<< 1, 1024, 2048*sizeof(int) >>>(d_matrix, posMax);
+	
+	cudaDeviceSynchronize();
+	error = cudaGetLastError();
+	
+	if (error != cudaSuccess) {
+		printf("Error with kernel or d_matrix/d_trace allocation: %s\n", cudaGetErrorString(error));
+		exit(0);
+	}
+	int *pos = (int*)malloc(1*sizeof(int));
+	cudaMemcpy(pos, posMax, 1*sizeof(int), cudaMemcpyDeviceToHost);
+
+	//Allocate and copy score table to host
 	int *matrix =(int*)malloc(sizeof(int)*entries);
 	cudaMemcpy(matrix, d_matrix, sizeof(int)*entries, cudaMemcpyDeviceToHost);
-
-	//Initialize trace matrix on Device
-	int* d_trace;
-	cudaMalloc((void**)&d_trace, sizeof(int)*entries);
-	init_matrix<<< ceilf(((float)entries)/256), 256 >>>(d_trace, -2, entries);
-
-	//Allocate and copy trace matrix to Host
+	
+	//printf("Pos: %d\t%d\n", *pos, matrix[*pos]);
+	
+	//Allocate and copy trace table to host
 	int *trace =(int*)malloc(sizeof(int)*entries);
 	cudaMemcpy(trace, d_trace, sizeof(int)*entries, cudaMemcpyDeviceToHost);
 
 	//Allocate final matrix: Used for output (easier printing)
 	int *matrix2d = (int*)malloc(sizeof(int)*entries);
-
-	// Do calculation on device:
-	CalculateCost(d_matrix, d_trace, lenS1+1, lenS2+1);
-	cudaDeviceSynchronize();
-
-	// Retrieve result from device and store it in host array
-	cudaMemcpy(matrix, d_matrix, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
-	cudaMemcpy(trace, d_trace, sizeof(int)*(lenS1+1)*(lenS2+1), cudaMemcpyDeviceToHost);
-
 	CopyToMatrix(matrix2d, matrix, lenS1+1, lenS2+1);
-	//PrintMatrix(matrix2d,  lenS1+1, lenS2+1);
+	
+	if (argc > 3 && !strcmp("-v",argv[3])){ 
+		PrintMatrix(matrix2d, string1, string2, lenS1+1, lenS2+1);
+	}
 
 	//This Section causes an error:  "object was probably modified after being freed"
 	/**Find largest value in matrix and then walk back until a '0' <- matrix[ix+j] value is found.
@@ -185,21 +262,27 @@ int main(int argc, char *argv[]){
 	free(finalS2);
 	*/
 
-	// Cleanup
-	free(matrix2d);
-	free(matrix);
-	cudaFree(d_matrix);
-
-	free(trace);
-	cudaFree(d_trace);
-
-	free(string1);
-	free(string2);
+	//Free device memory
 	cudaFree(d_string1);
 	cudaFree(d_string2);
+	cudaFree(d_matrix);
+	cudaFree(d_trace);
+	cudaFree(posMax);
+	
+	//Free host memory
+	free(string1);
+	free(string2);
+	free(matrix2d);
+	free(matrix);
+	free(trace);	
+
+	cudaDeviceReset();
 }
 
-void CalculateCost(int *d_matrix, int *d_trace, int s1, int s2){
+/**	
+*
+*/
+void CalculateCost(int *d_matrix, int *d_trace, char *d_s1, char *d_s2, int s1, int s2){
 	int i = 3;
 	int prev = 1;
 	int last = 0;
@@ -209,28 +292,33 @@ void CalculateCost(int *d_matrix, int *d_trace, int s1, int s2){
         int z2 = slice < s2 ? 0 : slice - s2 + 1;
         
 		int size = slice - z1 - z2 +1;
-		int threads = size -2;
+		int numElements = size -2;
 		
 		if (z2>1) last++;
-		if (z1 > 0) threads++;
+		if (z1 > 0) numElements++;
 		
 		int off =1;
-		if (z2 > 0) { threads++; off = 0; };
+		if (z2 > 0) { numElements++; off = 0; };
+		int blocksPerGrid = (numElements + numThreads - 1)/numThreads;
         
-		ComputeDiagonal<<<(threads/numThreads + 1), numThreads>>>
-						(i + off, prev, last, threads, d_matrix, d_trace, d_string1, d_string2, max(z2-1, 0), min(slice-2, s2-2));
+		ComputeDiagonal<<< blocksPerGrid, numThreads>>>
+				(i + off, prev, last, numElements, d_matrix, d_trace, d_s1, d_s2, max(z2-1, 0), min(slice-2, s2-2));
 		last = prev;
 		prev = i;
 		i += size;
     }
 }
 
-void PrintMatrix(int *arr, int xDim, int yDim){
-	printf("\t|");
+void PrintMatrix(int *arr, char *s1, char *s2, int xDim, int yDim){
+	printf("\t");
+	for(int i = 0; i < xDim - 1; i++){
+		printf("\t%c", s1[i]);
+	}
+	printf("\n------------------------------------------------------------------------------------------------------\n\t|");
 	for(int i =0; i < yDim; i++){	
 		for(int j = 0; j < xDim; j++)
 			printf("%d\t",arr[i*xDim + j]);
-		printf("\n%c\t|", string2[i]);
+		printf("\n%c\t|", s2[i]);
 	}printf("\n");
 }
 
