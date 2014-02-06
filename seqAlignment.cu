@@ -25,9 +25,9 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 		matrix[ blockDim.x * blockIdx.x + threadIdx.x] = value;
 }
 
-//Finds max value of array and places its index into '*out'
+//Finds max value of array and places its index into '*iOut'
 //Credit to udacity - Lesson 3 - reduction
-__global__ void maxReduce(int *table, int *out){
+__global__ void maxReduce(int *table, int *maxOut, int *iOut){
 	int id = threadIdx.x;
 	extern __shared__ int s_table[];
 	
@@ -45,12 +45,12 @@ __global__ void maxReduce(int *table, int *out){
 		else
 			s_table[id+i] = id;
 		syncthreads();
-		if (id ==0){
+		/*if (id ==0){
 			for (int j=0; j < blockDim.x; j++)
 				printf("%d ", s_table[j]);
 			printf("\n");
 		}
-		syncthreads();
+		syncthreads();*/
 	}
 	
 	int temp = i;
@@ -65,38 +65,72 @@ __global__ void maxReduce(int *table, int *out){
 		}
 		temp = i;
 		syncthreads();
-		if (id ==0){
+		/*if (id ==0){
 			for (int j=0; j < blockDim.x; j++)
 				printf("%d ", s_table[j]);
 			printf("\n");
 		}
-		syncthreads();
+		syncthreads();*/
 	}
 	
 	//place resulting index into out
-	if (id == 0)
-		out[blockIdx.x] = s_table[id+1];
-		
+	if (id == 0){
+		maxOut[blockIdx.x] = s_table[id];
+		iOut[blockIdx.x] = s_table[id+1];
+		//printf("BlockId: %d\tMax: %d\tIndex: %d\n", blockIdx.x, s_table[id], s_table[id+1]);
+	}
 }
 
 void testReduce(){
-	int arr[] = { 2, 1, 399, 5, 8, 59, -7, -4, 23, 15, 34, 59, 86, 19, 55, 84 };
-	int *i = (int*)malloc(sizeof(int));
-	int *d_i, *d_arr;
-	cudaMalloc((void**)&d_i, sizeof(int));  
-	cudaMalloc((void**)&d_arr, sizeof(int)*16);
+	int size;
+	scanf("%d", &size);
+	int *arr = (int*)malloc(sizeof(int)*size);
+	srand(time(NULL));
+	for (int i=0; i <size; i++)
+		arr[i] = rand()%500;
 	
-	cudaMemcpy(d_arr, arr, sizeof(int)*16, cudaMemcpyHostToDevice);
+	int *d_i, *d_arr, *d_max;
+	 
+	cudaMalloc((void**)&d_arr, sizeof(int)*size);
+	cudaMemcpy(d_arr, arr, sizeof(int)*size, cudaMemcpyHostToDevice);
 	
+	int threadsPerBlock = 1024;
+	int blocks = (size + threadsPerBlock - 1)/threadsPerBlock;
+	cudaMalloc((void**)&d_i, sizeof(int)*blocks); 
+	cudaMalloc((void**)&d_max, sizeof(int)*blocks);	
 	
-	maxReduce<<< 1, 16, sizeof(int)*16 >>>(d_arr, d_i);
-	cudaDeviceSynchronize();
-	cudaMemcpy(i, d_i, sizeof(int), cudaMemcpyDeviceToHost);	
 
-	printf("Max Index: %d\n", *i);  
+	maxReduce<<< blocks, threadsPerBlock, sizeof(int)*threadsPerBlock>>>(d_arr, d_max, d_i);
+	cudaDeviceSynchronize();
+	cudaMemcpy(intermediateIndex, d_i, sizeof(int)*blocks, cudaMemcpyDeviceToHost);
+	int *intermediateIndex = (int*)malloc(sizeof(int)*blocks);
 	
-	free(i);
-	cudaFree(d_arr); cudaFree(d_i);
+	
+	threadsPerBlock = blocks;
+	blocks = 1;
+	int *d_maxVal; int *d_interI;
+	cudaMalloc((void**)&d_maxVal, sizeof(int)); 
+	cudaMalloc((void**)&d_interI, sizeof(int));
+	maxReduce<<< blocks, threadsPerBlock, sizeof(int)*threadsPerBlock>>>(d_max, d_maxVal, d_interI);
+	cudaDeviceSynchronize();
+	
+	int *i = (int*)malloc(sizeof(int));
+	int *j = (int*)malloc(sizeof(int));
+	cudaMemcpy(i, d_interI, sizeof(int), cudaMemcpyDeviceToHost);
+	cudaMemcpy(j, d_maxVal, sizeof(int), cudaMemcpyDeviceToHost);
+
+	printf("Kernel: max %d index %d\n", *j, intermediateIndex[*i]);
+	int max = 0; int in = 0;
+	for (int j=0; j <size; j++){
+		if (arr[j] >= max){
+			max = arr[j];
+			in = j;
+		}
+	}
+	printf("Host: max %d index %d\n", max, in);
+	
+	free(i); free(arr); free(j); free(intermediateIndex);
+	cudaFree(d_arr); cudaFree(d_i); cudaFree(d_max); cudaFree(d_maxVal); cudaFree(d_interI);
 	
 }
 
