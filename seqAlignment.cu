@@ -11,6 +11,8 @@
 
 #define numThreads 128
 
+void testReduce();
+
 void CalculateCost(int *d_matrix, int *d_trace, char *d_s1, char *d_s2, int s1, int s2);
 
 void CopyToMatrix(int *dst, int *src, int cols, int rows);
@@ -26,27 +28,76 @@ __global__ void init_matrix(int *matrix, int value, int maxElements){
 //Finds max value of array and places its index into '*out'
 //Credit to udacity - Lesson 3 - reduction
 __global__ void maxReduce(int *table, int *out){
-	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	int id = threadIdx.x;
 	extern __shared__ int s_table[];
 	
 	//copy from global to shared memory
 	s_table[id] = table[id];
-	s_table[id+1024] = id;
-	syncthreads();
+	syncthreads(); 
 	
-	for(unsigned int i = blockDim.x/2; i > 0; i>>=2){
-		if (id < i){
-			if (s_table[id] > s_table[id + i]){
-				s_table[id] = s_table[id + i];
-				s_table[id+1024] = s_table[id+i+1024];
-			}
+	//Do first reduction and store indices in 2nd half of array
+	unsigned int i = blockDim.x/2;
+	if (id < i){
+		if (s_table[id+i] > s_table[id]){
+			s_table[id] = s_table[id + i];
+			s_table[id+i] = id + i;
+		}
+		else
+			s_table[id+i] = id;
+		syncthreads();
+		if (id ==0){
+			for (int j=0; j < blockDim.x; j++)
+				printf("%d ", s_table[j]);
+			printf("\n");
 		}
 		syncthreads();
 	}
 	
-	//place result int out
+	int temp = i;
+	for(i >>= 1; i > 0; i>>=1){
+		if (id < i){
+			if (s_table[id+i] > s_table[id]){
+				s_table[id] = s_table[id + i];
+				s_table[id+i] = s_table[id+i+temp];
+			}
+			else
+				s_table[id+i] = s_table[id + temp];
+		}
+		temp = i;
+		syncthreads();
+		if (id ==0){
+			for (int j=0; j < blockDim.x; j++)
+				printf("%d ", s_table[j]);
+			printf("\n");
+		}
+		syncthreads();
+	}
+	
+	//place resulting index into out
 	if (id == 0)
-		out[id] = s_table[id+1024];
+		out[blockIdx.x] = s_table[id+1];
+		
+}
+
+void testReduce(){
+	int arr[] = { 2, 1, 399, 5, 8, 59, -7, -4, 23, 15, 34, 59, 86, 19, 55, 84 };
+	int *i = (int*)malloc(sizeof(int));
+	int *d_i, *d_arr;
+	cudaMalloc((void**)&d_i, sizeof(int));  
+	cudaMalloc((void**)&d_arr, sizeof(int)*16);
+	
+	cudaMemcpy(d_arr, arr, sizeof(int)*16, cudaMemcpyHostToDevice);
+	
+	
+	maxReduce<<< 1, 16, sizeof(int)*16 >>>(d_arr, d_i);
+	cudaDeviceSynchronize();
+	cudaMemcpy(i, d_i, sizeof(int), cudaMemcpyDeviceToHost);	
+
+	printf("Max Index: %d\n", *i);  
+	
+	free(i);
+	cudaFree(d_arr); cudaFree(d_i);
+	
 }
 
 __global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
@@ -183,7 +234,8 @@ int main(int argc, char *argv[]){
 		exit(0);
 	}
 	
-	int *posMax;
+	testReduce();
+	/*int *posMax;
 	error = cudaMalloc((void**)&posMax, 1*sizeof(int));
 	maxReduce<<< 1, 1024, 2048*sizeof(int) >>>(d_matrix, posMax);
 	
@@ -195,7 +247,7 @@ int main(int argc, char *argv[]){
 		exit(0);
 	}
 	int *pos = (int*)malloc(1*sizeof(int));
-	cudaMemcpy(pos, posMax, 1*sizeof(int), cudaMemcpyDeviceToHost);
+	cudaMemcpy(pos, posMax, 1*sizeof(int), cudaMemcpyDeviceToHost);*/
 
 	//Allocate and copy score table to host
 	int *matrix =(int*)malloc(sizeof(int)*entries);
@@ -267,7 +319,7 @@ int main(int argc, char *argv[]){
 	cudaFree(d_string2);
 	cudaFree(d_matrix);
 	cudaFree(d_trace);
-	cudaFree(posMax);
+	//cudaFree(posMax);
 	
 	//Free host memory
 	free(string1);
