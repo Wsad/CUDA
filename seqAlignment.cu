@@ -102,36 +102,52 @@ void testReduce(){
 
 	maxReduce<<< blocks, threadsPerBlock, sizeof(int)*threadsPerBlock>>>(d_arr, d_max, d_i);
 	cudaDeviceSynchronize();
-	cudaMemcpy(intermediateIndex, d_i, sizeof(int)*blocks, cudaMemcpyDeviceToHost);
+	
 	int *intermediateIndex = (int*)malloc(sizeof(int)*blocks);
+	cudaMemcpy(intermediateIndex, d_i, sizeof(int)*blocks, cudaMemcpyDeviceToHost);
 	
-	
-	threadsPerBlock = blocks;
-	blocks = 1;
-	int *d_maxVal; int *d_interI;
-	cudaMalloc((void**)&d_maxVal, sizeof(int)); 
-	cudaMalloc((void**)&d_interI, sizeof(int));
-	maxReduce<<< blocks, threadsPerBlock, sizeof(int)*threadsPerBlock>>>(d_max, d_maxVal, d_interI);
-	cudaDeviceSynchronize();
-	
-	int *i = (int*)malloc(sizeof(int));
-	int *j = (int*)malloc(sizeof(int));
-	cudaMemcpy(i, d_interI, sizeof(int), cudaMemcpyDeviceToHost);
-	cudaMemcpy(j, d_maxVal, sizeof(int), cudaMemcpyDeviceToHost);
+	if (size >1024){
+		threadsPerBlock = blocks;
+		blocks = 1;
+		int *d_maxVal; int *d_interI;
+		cudaMalloc((void**)&d_maxVal, sizeof(int)); 
+		cudaMalloc((void**)&d_interI, sizeof(int));
+		maxReduce<<< blocks, threadsPerBlock, sizeof(int)*threadsPerBlock>>>(d_max, d_maxVal, d_interI);
+		cudaDeviceSynchronize();
+		
+		int *i = (int*)malloc(sizeof(int));
+		int *j = (int*)malloc(sizeof(int));
+		cudaMemcpy(i, d_interI, sizeof(int), cudaMemcpyDeviceToHost);
+		cudaMemcpy(j, d_maxVal, sizeof(int), cudaMemcpyDeviceToHost);
 
-	printf("Kernel: max %d index %d\n", *j, intermediateIndex[*i]);
-	int max = 0; int in = 0;
-	for (int j=0; j <size; j++){
-		if (arr[j] >= max){
-			max = arr[j];
-			in = j;
+		printf("Kernel: max %d index %d\n", *j, intermediateIndex[*i]);
+		int max = 0; int in = 0;
+		for (int j=0; j <size; j++){
+			if (arr[j] >= max){
+				max = arr[j];
+				in = j;
+			}
 		}
+		printf("Host: max %d index %d\n", max, in);
+		free(i);
+		free(j);
+		cudaFree(d_maxVal); 
+		cudaFree(d_interI);
 	}
-	printf("Host: max %d index %d\n", max, in);
+	else{
+		printf("Kernel: max %d index %d\n", *j, *intermediateIndex);
+		int max = 0; int in = 0;
+		for (int j=0; j <size; j++){
+			if (arr[j] >= max){
+				max = arr[j];
+				in = j;
+			}
+		}
+		printf("Host: max %d index %d\n", max, in);
+	}
 	
-	free(i); free(arr); free(j); free(intermediateIndex);
-	cudaFree(d_arr); cudaFree(d_i); cudaFree(d_max); cudaFree(d_maxVal); cudaFree(d_interI);
-	
+	free(arr); free(intermediateIndex);
+	cudaFree(d_arr); cudaFree(d_i); cudaFree(d_max); 
 }
 
 __global__ void ComputeDiagonal(int i, int prevI, int lastI, int space, int *arr, int *trace, char *s1, char *s2, int s1off, int s2off){
