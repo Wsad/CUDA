@@ -61,89 +61,68 @@ __global__ void CalculateTiledMatrix(int *d_m, int *d_t, char *d_s1, char *d_s2,
 	int index = i - (blockIdx.x*blockDim.x)*cols + id;
 
 	// Todo: Check condition, blocks larger thread numbers when copying border data to shared memory (rectangular matrices)
-	if (i%cols + id < cols){
+	if (/*i%cols + id - 1 < cols &&*/ i-(blockIdx.x)*(blockDim.x)*cols -1 + threadIdx.x*cols < entries){/*index + threadIdx.x*cols -1*/
 		if (threadIdx.x == 0){
 			sh_m[0] = d_m[index - cols -1];
-			//d_m[index - cols -1] = threadIdx.x +1;
 		}
-		//tile[threadIdx.x + 1] = d_m[index - cols];
-		sh_m[threadIdx.x + 1] = d_m[index - cols];
-		/*if ( id >= cols)
-			printf("d_s1[%d]\n",id);*/
-		//sh_s1[threadIdx.x] = d_s1[id];
-		sh_s2[threadIdx.x] = d_s2[index/cols + threadIdx.x - 1];
-
-		//printf("thread: %d\tup: %d\tleft: %d\n", id, threadIdx.x +1, (blockDim.x+1)*(threadIdx.x +1));
-		//d_m[index - cols] = threadIdx.x + 1;
-
+		//sh_m[threadIdx.x + 1] = d_m[index - cols];
+		sh_s2[threadIdx.x] = d_s2[i/cols-(blockIdx.x)*(blockDim.x) -1 + threadIdx.x];
+		/*if (blockIdx.x == 1)		
+			printf("index: %d\ts2: %d\t\n",index,i/cols-(blockIdx.x)*(blockDim.x) -1 + threadIdx.x);*/
 	}
-	if (index + cols*threadIdx.x - threadIdx.x - 1 < entries){
-		//tile[(blockDim.x + 1)*(threadIdx.x + 1)] = d_m[index + cols*threadIdx.x - threadIdx.x - 1];
-		sh_m[(blockDim.x + 1)*(threadIdx.x + 1)] = d_m[index + cols*threadIdx.x - threadIdx.x - 1];	
-		//printf("BID: %d\ts2[%d]\tnew I: %d\n",blockIdx.x, id, index/cols + threadIdx.x);
-		//sh_s2[threadIdx.x] = d_s2[index/cols + threadIdx.x - 1];
-		sh_s1[threadIdx.x] = d_s1[id];
-
-		//d_m[index + cols*threadIdx.x - threadIdx.x - 1] = threadIdx.x + 1;
+	if (i%cols + id  < cols /*&& i%cols + id - 1 < entries*/ ){
+		sh_s1[threadIdx.x] = d_s1[i%cols + id - 1];
+		sh_m[threadIdx.x + 1] = d_m[index - cols];
+		/*if (blockIdx.x == 1)		
+			printf("index: %d\tS1 %d\n",index, i%cols + id -1);*/
+	}
+	if (i - blockIdx.x*blockDim.x*cols + blockIdx.x*blockDim.x + cols*threadIdx.x - 1 < entries){
+		sh_m[(blockDim.x + 1)*(threadIdx.x + 1)] = d_m[i - blockIdx.x*blockDim.x*cols + blockIdx.x*blockDim.x + cols*threadIdx.x - 1 ];
+		//printf("s1[%d]\n", index%cols - 1);
 	}
 	syncthreads(); 
-	//printf("Id: %d :\t  s1 %c\ts2 %c\n", id, sh_s1[threadIdx.x], sh_s2[threadIdx.x]);
 
-	// i%cols + id
-	for(int d = 1; d < blockDim.x + 1; d++){
-		if (threadIdx.x < d){
-			int upLeft = sh_m[(d - threadIdx.x - 1)*blockDim.x + threadIdx.x];
-			int up = sh_m[(d - threadIdx.x - 1)*blockDim.x + threadIdx.x +1];
-			int left = sh_m[(d - threadIdx.x)*blockDim.x + threadIdx.x];
+	//Calculate cost for each diagonal
+	for (int b = 0; b < 2; b++){
+		for(int d = 1; d < blockDim.x + 1; d++){
+			if (threadIdx.x < blockDim.x*b - b*d + d*(1-b) ){
+				int upLeft = sh_m[(d - d*b + blockDim.x*b - threadIdx.x - 1)*(blockDim.x+1) + d*b + threadIdx.x];//[(d - threadIdx.x - 1)*(blockDim.x+1) + threadIdx.x]
+				int up = sh_m[(d - d*b + blockDim.x*b - threadIdx.x - 1)*(blockDim.x+1) + threadIdx.x + d*b + 1];//[(d - threadIdx.x - 1)*(blockDim.x+1) + threadIdx.x + 1]
+				int left = sh_m[(d - d*b + blockDim.x*b - threadIdx.x)*(blockDim.x+1) + d*b + threadIdx.x];//[(d - threadIdx.x)*(blockDim.x+1) + threadIdx.x]
 
-			if (sh_s1[threadIdx.x] == sh_s2[d-1-threadIdx.x])
-				upLeft += 2;
-			else
-				upLeft -= 1;
+				if (sh_s1[threadIdx.x + d*b] == sh_s2[d - d*b + blockDim.x*b - 1-threadIdx.x])
+					upLeft += 2;
+				else
+					upLeft -= 1;
 
-			int cost; int dir;
-			if (up > left) {
-				cost = up - 1;
-				dir = 1;
-			} else {
-				cost = left - 1;
-				dir = -1;
+				int cost; //int dir;
+				if (up > left) {
+					cost = up - 1;
+					//dir = 1;
+				} else {
+					cost = left - 1;
+					//dir = -1;
+				}
+				if (upLeft > cost) {
+					cost = upLeft;
+					//dir = 0;
+				}
+				sh_m[(d -d*b + blockDim.x*b - threadIdx.x)*(blockDim.x+1) + d*b + threadIdx.x + 1] = max(0, cost);
+				/*if (threadIdx.x == 31 && index > 79){
+					printf("ID: %d\tS1 %c\tS2 %c\tUpleft %d\tLeft %d\tUp %d\tCost: %d\ts1[%d]\ts2[%d]\n", index, sh_s1[threadIdx.x+d*b], sh_s2[d - d*b + blockDim.x*b - 1-threadIdx.x], upLeft, left, up, max(0,cost),threadIdx.x +d*b,d - d*b + blockDim.x*b - 1-threadIdx.x );
+					//printf("index: %d\ts2: %d\n",index,index/cols+threadIdx.x -1);
+				}*/
 			}
-			if (upLeft > cost) {
-				cost = upLeft;
-				dir = 0;
-			}
-			sh_m[(d - threadIdx.x)*(blockDim.x+1) + threadIdx.x + 1] = max(0, cost);
-			if (threadIdx.x == 0){
-				printf("ID: %d\tS1 %c\tS2 %c\tCost: %d\n", id, sh_s1[threadIdx.x], sh_s2[d-1-threadIdx.x], max(0,cost));
-			}
+			syncthreads();
 		}
-		syncthreads();
 	}
-	for (int d = 0; d < blockDim.x; d++){
-		//if(threadIdx.x < blockDim.x - d)
-			//sh_m[(blockDim.x+1)*(blockDim.x-threadIdx.x) + threadIdx.x + d + 1] = (blockDim.x+1)*(blockDim.x-threadIdx.x) + threadIdx.x + d + 1;//threadIdx.x;
-	}
-	//Calculate each diagonal and store results into shared memory
 
 	//Copy results from shared memory into global memory
 	for (int j = 0; j < blockDim.x; j++){
-		if (i%cols + id < cols && index + j*cols + threadIdx.x < entries){
+		if (i%cols + id < cols && index + j*cols < entries){
 			d_m[index + j*(cols)] = sh_m[(j+1)*(blockDim.x+1) + threadIdx.x + 1];
 		}
-		if (id ==0)
-			printf("%c\t%c\n", sh_s1[j], sh_s2[j]); 
 	}
-	syncthreads(); 	
-
-	/*for (int j = 0; j < blockDim.x; j++){
-		int id = blockIdx.x*blockDim.x + threadIdx.x;	
-		int index = i - (blockIdx.x*blockDim.x - j)*cols + id;
-		if (index < entries && (i%cols + id < cols) ){
-			tile[blockDim.x*j + threadIdx.x] = d_m[index];
-			//d_m[i - (blockIdx.x*blockDim.x - j)*cols + blockIdx.x*blockDim.x + threadIdx.x] = blockNum;
-		}
-	}*/
 }
 
 __global__ void CalculateTiledDiagonal(int *d_matrix, int *d_trace, char *d_s1, char *d_s2, int diag, int rows, int cols) {
@@ -369,7 +348,24 @@ int main(int argc, char *argv[]) {
 		CalculateCost(d_matrixArr, d_trace, d_string1, d_s2Arr, lenS1 + 1,lenS2 + 1, numComparisons, entries);
 	} 
 	else {
-		threadsPerBlock = 5;
+
+		CalculateCost(d_matrixArr, d_trace, d_string1, d_s2Arr, lenS1+1, lenS2+1, numComparisons, entries);
+		cudaDeviceSynchronize();
+		int *a = (int*)malloc(sizeof(int)*entries);
+		cudaMemcpy(a, d_matrixArr, sizeof(int)*entries, cudaMemcpyDeviceToHost);
+
+		threadsPerBlock = 1024;
+		blocksPerGrid = (entries + threadsPerBlock - 1) / threadsPerBlock;
+		init_matrix<<< blocksPerGrid, threadsPerBlock >>>(d_matrixArr, 0, entries);
+
+		cudaDeviceSynchronize();
+		int *m2d = (int*) malloc(sizeof(int) * entries);
+		CopyToMatrix(m2d, a, lenS1+1, lenS2+1);
+		//PrintMatrix(m2d, string1, s2Arr, lenS1+1, lenS2+1);
+
+
+		
+		threadsPerBlock = 32;
 		blocksPerGrid = 0;
 		int blocksInRow = (lenS1 + threadsPerBlock -1)/threadsPerBlock;
 		int blocksInCol = (lenS2 + threadsPerBlock -1)/threadsPerBlock;
@@ -383,25 +379,17 @@ int main(int argc, char *argv[]) {
 
 			if (i == 0){
 				blocksPerGrid++;
-				//printf("0 if,  blocks: %d i : %d index %d\n",blocksPerGrid, i, index);
-				//CalculateTiledMatrix<<< blocksPerGrid, threadsPerBlock, (threadsPerBlock+1)*(threadsPerBlock+1) >>>(d_matrixArr, d_trace, d_string1, d_s2Arr, (lenS1+1), index, entries, blocksPerGrid);
 			}			
 			else if (z1 == 0 && z2 == 0){
 				index += threadsPerBlock*(lenS1+1);
 				blocksPerGrid++;
-				//printf("1st if,  blocks: %d i : %d index %d\n",blocksPerGrid, i, index);
-				//CalculateTiledMatrix<<< blocksPerGrid, threadsPerBlock, (threadsPerBlock+1)*(threadsPerBlock+1) >>>(d_matrixArr, d_trace, d_string1, d_s2Arr, (lenS1+1), index, entries, blocksPerGrid);
 			}
 			else if (z1 > 0 && z2 > 0){
 				index += threadsPerBlock;
 				blocksPerGrid--;
-				//printf("2nd if,  blocks: %d i : %d index %d\n",blocksPerGrid, i, index);
-				//CalculateTiledMatrix<<< blocksPerGrid, threadsPerBlock, (threadsPerBlock+1)*(threadsPerBlock+1) >>>(d_matrixArr, d_trace, d_string1, d_s2Arr, (lenS1+1), index, entries, blocksPerGrid);
 			}
 			else{
 				index += threadsPerBlock;
-				//printf("3rd if,  blocks: %d i : %d index %d\n",blocksPerGrid, i, index);
-				//CalculateTiledMatrix<<< blocksPerGrid, threadsPerBlock, (threadsPerBlock+1)*(threadsPerBlock+1) >>>(d_matrixArr, d_trace, d_string1, d_s2Arr, (lenS1+1), index, entries, blocksPerGrid);
 			}
 			CalculateTiledMatrix<<< blocksPerGrid, threadsPerBlock, sizeof(int)*(threadsPerBlock+1)*(threadsPerBlock+1) + sizeof(char)*2*threadsPerBlock >>>(d_matrixArr, d_trace, d_string1, d_s2Arr, (lenS1+1), index, entries, blocksPerGrid);
 		}	
@@ -409,15 +397,35 @@ int main(int argc, char *argv[]) {
 		cudaDeviceSynchronize();
 		int *r = (int*)malloc(sizeof(int)*entries);
 		cudaMemcpy(r, d_matrixArr, sizeof(int)*entries, cudaMemcpyDeviceToHost);
-		PrintMatrix(r, string1, s2Arr, lenS1+1, lenS2+1);		
-		
-		/*for(int i = 0; i < lenS2 +1; i++){
-			for( int j =0; j <lenS1 +1; j++)
+		//PrintMatrix(r, string1, s2Arr, lenS1+1, lenS2+1);		
+		/*for (int j =28; j < lenS1; j++)
+			printf(" |\t%c", s2Arr[j]);
+		printf("\n\t");
+		for(int i = 0; i < lenS2 +1; i++){
+			for( int j =29; j <lenS1 +1; j++)
 				printf("%d\t", r[i*(lenS1+1) + j]);
-			printf("\n");
+			printf("\n%c | \t", s2Arr[i]);
+		}
+				printf("\n\n");
+		for (int j =28; j < lenS1; j++)
+			printf(" |\t%c", s2Arr[j]);
+		printf("\n\t");
+		for(int i = 0; i < lenS2 +1 ; i++){
+			for( int j =29; j <lenS1 +1; j++)
+				printf("%d\t", m2d[i*(lenS1+1) + j]);
+			printf("\n%c | \t", s2Arr[i]);
 		}*/
-		free(r);
-		
+
+		for(int n = 0; n < entries; n++){
+			if (m2d[n] != r[n]){
+				printf("Tiled result different from Diagonal Kernel result: index %d\n", n);
+				free(m2d); free(r); free(a);
+				cudaDeviceReset();
+				exit(0);
+			}
+		}
+		printf("Tiled result same as Diagonal\n");
+		free(r); free(a); free(m2d);
 		/*//Calculate cost using tiled method
 		threadsPerBlock = 256;
 		cudaStream_t s[numComparisons];
